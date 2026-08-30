@@ -57,6 +57,29 @@ export async function GET(request: Request) {
   return NextResponse.json({ analyses: rows.map(toPublicRecord) });
 }
 
+export async function DELETE(request: Request) {
+  const customerId = await customerScope(request);
+  let id: string;
+  try {
+    id = stringValue(asObject(await request.json()).id);
+  } catch {
+    return NextResponse.json({ error: "A saved analysis id is required." }, { status: 400 });
+  }
+  if (!id) return NextResponse.json({ error: "A saved analysis id is required." }, { status: 400 });
+
+  const [owned] = await getDb()
+    .select({ id: analyses.id })
+    .from(analyses)
+    .where(and(eq(analyses.id, id), eq(analyses.customerId, customerId), eq(analyses.saveForHistory, true)))
+    .limit(1);
+  if (!owned) return NextResponse.json({ error: "Saved analysis not found." }, { status: 404 });
+
+  await getDb()
+    .delete(analyses)
+    .where(and(eq(analyses.id, id), eq(analyses.customerId, customerId)));
+  return NextResponse.json({ deleted: true, id });
+}
+
 export async function POST(request: Request) {
   const customerId = await customerScope(request);
   const createdAtUtc = new Date().toISOString();

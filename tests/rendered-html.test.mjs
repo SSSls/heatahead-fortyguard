@@ -31,7 +31,7 @@ test("server-renders the HeatAhead v2 customer workflow", async () => {
   assert.match(html, /<title>HeatAhead — Data Center Weather Intelligence<\/title>/i);
   assert.match(html, /Proactive thermal decision support/);
   assert.match(html, /Facility name/);
-  assert.match(html, /Facility footprint width/);
+  assert.match(html, /Core square width/);
   assert.match(html, /Paste coordinate pair/);
   assert.match(html, /Load state · 45–105% in 5% steps/);
   assert.match(html, /Exact load state/);
@@ -40,6 +40,8 @@ test("server-renders the HeatAhead v2 customer workflow", async () => {
   assert.match(html, /Environmental Exposure/);
   assert.match(html, /Predicted Cooling Impact/);
   assert.match(html, /Facility analysis history/);
+  assert.match(html, /What every input changes/);
+  assert.match(html, /Delete permanently removes/);
   assert.match(html, /ESIF internal model/);
   assert.match(html, /Frontier calibration/);
   assert.match(html, /Seven U.S. target sites/);
