@@ -211,6 +211,20 @@ History 每条记录现在有 `Delete`：
 
 预设列表不是 coverage 白名单。任何不在预设中的美国设施都可以选择 `Custom U.S. facility`、粘贴坐标、设置正确 IANA timezone 后提交。运行成功才是该地点/时刻在当前 API 下的实证覆盖。
 
+### 10.1 三个未预设坐标的真实验证
+
+验证设置：2026-08-29 14:00 当地时间、600 m core square、70% load state、100 MW IT load、baseline PUE 1.10、direct-to-chip；`saveForHistory=false`。三处均完成三个 heatmap 和 environmental parameter activity。
+
+| Custom facility | 坐标 | Core / near / context | RH / 湿球 | Exposure | 100 MW 天气增量 | Scenario PUE | Confidence |
+| --- | --- | --- | --- | --- | ---: | ---: | --- |
+| Microsoft Boydton, VA | `36.6854, -78.3766` | 31.35 / 31.40 / 31.47°C | 58.8% / 22.6°C | Elevated · 42.4 | +1.51 MW | 1.1151 | Medium |
+| Google Council Bluffs, IA | `41.220836, -95.863464` | 32.45 / 32.41 / 32.39°C | 54.4% / 23.9°C | Elevated · 49.3 | +1.50 MW | 1.1150 | Medium |
+| Meta Prineville, OR | `44.295709, -120.885998` | 18.41 / 18.41 / 18.42°C | 27.9% / 9.5°C | Low · 1.8 | −0.40 MW | 1.0960 | Medium |
+
+这些结果证明这三个“未在 Demo 预设列表中”的坐标和所选历史时刻能走通当前 API 管线；它们不证明目标设施的实际 IT load、PUE 或冷却功率，也不能外推为美国全覆盖。
+
+时间戳还有一个需要透明展示的细节：FortyGuard 在这三次 8 月请求中返回的 offset 分别为 `-05:00`、`-06:00`、`-08:00`，而对应 IANA 时区当日处于夏令时。当前服务端同时保存 IANA 转换后的 UTC、API timestamp 和对齐依据；当 API 的当地墙钟小时一致但固定 GMT offset 相差一小时时，记录为 `local-wall-clock` 对齐。界面现已同时展示 Local、UTC 和 API timestamp，方便评委审查。若用于生产，应向 FortyGuard 确认 offset 语义，或者把任何 UTC instant mismatch 都降为 Low。
+
 ## 11. 后续模型升级优先级
 
 1. 保持当前 HGB 作为冻结基线。
