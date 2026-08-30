@@ -18,12 +18,14 @@
 
 ## Live Demo
 
-- [ ] Sites access mode 为 public
-- [ ] 无痕窗口无需登录即可加载
-- [ ] 能提交一次真实 FortyGuard 分析
-- [ ] 异步运行最终完成，或可从 History 恢复
-- [ ] 结果、错误处理和免责声明可见
-- [ ] 页面、客户端脚本和网络响应不包含 API key
+- [x] Sites access mode 为 public
+- [x] 无 Cookie、无登录请求返回 HTTP 200
+- [x] 全新匿名作用域的 History 初始为空
+- [x] 能提交一次真实 FortyGuard 分析
+- [x] 异步运行从 `processing_spatial` 到 `processing_environment` 再到 `completed`
+- [x] 结果、错误处理和免责声明可见
+- [x] 页面、客户端脚本和分析响应不包含 API key
+- [x] 关闭保存的 QA 运行完成后未留在匿名 History
 
 ## 视频
 

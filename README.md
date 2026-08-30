@@ -86,6 +86,7 @@ npm test
 
 - [Architecture and end-to-end flow](docs/ARCHITECTURE.md)
 - [Model card and equations](docs/MODEL_CARD.md)
+- [Public production QA record](docs/SUBMISSION_QA_ZH.md)
 - [Three-minute demo script](docs/DEMO_SCRIPT_ZH.md)
 - [Submission checklist](docs/SUBMISSION_CHECKLIST_ZH.md)
 
