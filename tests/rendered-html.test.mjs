@@ -22,7 +22,7 @@ async function render() {
   );
 }
 
-test("server-renders the HeatAhead v2.3 customer workflow", async () => {
+test("server-renders the HeatAhead v2.4 customer workflow", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -33,6 +33,8 @@ test("server-renders the HeatAhead v2.3 customer workflow", async () => {
   assert.match(html, /Facility name/);
   assert.match(html, /Core square width/);
   assert.match(html, /Paste coordinate pair/);
+  assert.match(html, /Check the facility point first/);
+  assert.match(html, /Check and confirm the facility point/);
   assert.match(html, /ESIF-equivalent load state · 45–105%/);
   assert.match(html, /Exact load state/);
   assert.match(html, /Best-supported choices/);
@@ -43,7 +45,8 @@ test("server-renders the HeatAhead v2.3 customer workflow", async () => {
   assert.match(html, /What every input changes/);
   assert.match(html, /retained for up to 90 days/);
   assert.match(html, /corrected center tile/);
-  assert.match(html, /Enter a valid U\.S\. location/);
+  assert.match(html, /customer confirmation/);
+  assert.match(html, /Demo v2\.4/);
   assert.match(html, /ESIF internal model/);
   assert.match(html, /Frontier operational check/);
   assert.match(html, /Seven U.S. target sites/);

@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { CATALOG_MATCH_RADIUS_KM, FACILITY_CATALOG, nearestCatalogFacility, type CatalogFacility } from "../lib/facility-catalog";
 import { LOAD_STATE_OPTIONS, loadStateOption, loadSupportLabel } from "../lib/load-state";
 
 type Analysis = {
@@ -67,13 +68,17 @@ type FormState = {
   allowSharedModelImprovement: boolean;
 };
 
+type LocationCheck = {
+  latitude: number;
+  longitude: number;
+  status: "candidate" | "unlisted" | "confirmed-catalog" | "confirmed-custom";
+  candidate: CatalogFacility | null;
+  distanceKm: number | null;
+};
+
 const presets = [
   { id: "custom", label: "Custom U.S. facility", name: "My facility", lat: "", lon: "", timezone: "America/New_York" },
-  { id: "esif", label: "NLR / ESIF — Golden, CO", name: "NLR / ESIF HPC", lat: "39.7427", lon: "-105.1701", timezone: "America/Denver" },
-  { id: "frontier", label: "ORNL Frontier — Oak Ridge, TN", name: "ORNL Frontier", lat: "35.9313", lon: "-84.3104", timezone: "America/New_York" },
-  { id: "berkeley", label: "Google Berkeley County, SC", name: "Google Berkeley County", lat: "33.196", lon: "-79.995", timezone: "America/New_York" },
-  { id: "midlothian", label: "Google Midlothian, TX", name: "Google Midlothian", lat: "32.4824", lon: "-96.9945", timezone: "America/Chicago" },
-  { id: "mesa", label: "Meta Mesa, AZ", name: "Meta Mesa", lat: "33.354884", lon: "-111.635759", timezone: "America/Phoenix" },
+  ...FACILITY_CATALOG.map((facility) => ({ id: facility.id, label: facility.label, name: facility.name, lat: String(facility.latitude), lon: String(facility.longitude), timezone: facility.timezone })),
 ];
 
 const timezones = ["America/New_York", "America/Chicago", "America/Denver", "America/Phoenix", "America/Los_Angeles", "America/Anchorage", "Pacific/Honolulu"];
@@ -112,6 +117,7 @@ export default function Home() {
   const [preset, setPreset] = useState("custom");
   const [coordinatePair, setCoordinatePair] = useState("");
   const [coordinateMessage, setCoordinateMessage] = useState("");
+  const [locationCheck, setLocationCheck] = useState<LocationCheck | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [history, setHistory] = useState<Analysis[]>([]);
   const [loading, setLoading] = useState(false);
@@ -159,27 +165,54 @@ export default function Home() {
     setPreset(id);
     const selected = presets.find((item) => item.id === id) ?? presets[0];
     setCoordinatePair(selected.lat && selected.lon ? `${selected.lat}, ${selected.lon}` : "");
-    setCoordinateMessage(selected.id === "custom" ? "" : "Preset coordinates applied.");
+    setCoordinateMessage(selected.id === "custom" ? "" : "Catalog coordinates applied and confirmed.");
+    const facility = FACILITY_CATALOG.find((item) => item.id === selected.id) ?? null;
+    setLocationCheck(facility ? { latitude: facility.latitude, longitude: facility.longitude, status: "confirmed-catalog", candidate: facility, distanceKm: 0 } : null);
     setForm((current) => ({ ...current, facilityName: selected.name, latitude: selected.lat, longitude: selected.lon, ianaTimezone: selected.timezone, analysisTimeLocal: localHour(selected.timezone) }));
+  }
+
+  function checkLocation(latitude: number, longitude: number) {
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < 18 || latitude > 72 || longitude < -180 || longitude > -60) {
+      setCoordinateMessage("Enter a U.S. pair such as 39.7427, -105.1701.");
+      setLocationCheck(null);
+      return;
+    }
+    const nearest = nearestCatalogFacility(latitude, longitude);
+    const candidate = nearest && nearest.distanceKm <= CATALOG_MATCH_RADIUS_KM ? nearest.facility : null;
+    setPreset("custom");
+    setForm((current) => ({ ...current, latitude: String(latitude), longitude: String(longitude) }));
+    setLocationCheck({ latitude, longitude, status: candidate ? "candidate" : "unlisted", candidate, distanceKm: candidate ? nearest.distanceKm : null });
+    setCoordinateMessage(candidate ? "Nearby catalog candidate found. Confirm it below before analysis." : "Point checked. No match in the current demo catalog; customer confirmation is available below.");
   }
 
   function applyCoordinatePair() {
     const match = coordinatePair.match(/^\s*\(?\s*(-?\d+(?:\.\d+)?)\s*(?:,|\s)\s*(-?\d+(?:\.\d+)?)\s*\)?\s*$/);
-    const latitude = match ? Number(match[1]) : Number.NaN;
-    const longitude = match ? Number(match[2]) : Number.NaN;
-    if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < 18 || latitude > 72 || longitude < -180 || longitude > -60) {
-      setCoordinateMessage("Enter a U.S. pair such as 39.7427, -105.1701.");
-      return;
-    }
+    checkLocation(match ? Number(match[1]) : Number.NaN, match ? Number(match[2]) : Number.NaN);
+  }
+
+  function confirmCatalogLocation() {
+    if (!locationCheck?.candidate) return;
+    setLocationCheck({ ...locationCheck, status: "confirmed-catalog" });
+    setPreset(locationCheck.candidate.id);
+    setForm((current) => ({ ...current, facilityName: locationCheck.candidate?.name ?? current.facilityName, ianaTimezone: locationCheck.candidate?.timezone ?? current.ianaTimezone, analysisTimeLocal: localHour(locationCheck.candidate?.timezone ?? current.ianaTimezone) }));
+  }
+
+  function useCustomerReportedLocation() {
+    if (!locationCheck) return;
+    setLocationCheck({ ...locationCheck, status: "confirmed-custom", candidate: null, distanceKm: null });
     setPreset("custom");
-    setForm((current) => ({ ...current, latitude: String(latitude), longitude: String(longitude) }));
-    setCoordinateMessage("Coordinates applied. Fine-tune either value below if needed.");
+    setCoordinateMessage("Customer-reported data center confirmed for this analysis.");
+  }
+
+  function editLocation() {
+    setLocationCheck(null);
+    setCoordinateMessage("Edit the point, then select Check location again.");
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!canSubmit) {
-      setError("Enter a facility name and valid U.S. latitude/longitude before running the analysis.");
+      setError("Enter a valid U.S. point, check it, and confirm either the catalog candidate or a customer-reported data center before analysis.");
       return;
     }
     setElapsedSeconds(0);
@@ -281,9 +314,11 @@ export default function Home() {
   const selectedLoadState = loadStateOption(Number(form.itLoadFraction)) ?? LOAD_STATE_OPTIONS.find((option) => option.percent === 80)!;
   const latitude = Number(form.latitude);
   const longitude = Number(form.longitude);
+  const locationConfirmed = locationCheck?.status === "confirmed-catalog" || locationCheck?.status === "confirmed-custom";
   const canSubmit = form.facilityName.trim().length > 0
     && Number.isFinite(latitude) && latitude >= 18 && latitude <= 72
     && Number.isFinite(longitude) && longitude >= -180 && longitude <= -60
+    && locationConfirmed
     && !loading;
 
   return (
@@ -305,9 +340,10 @@ export default function Home() {
           <div className="form-section-label full"><strong>Location &amp; analysis time</strong><span>Pick a known facility or paste coordinates from any map.</span></div>
           <label className="field full"><span>Start from</span><select value={preset} onChange={(event) => choosePreset(event.target.value)}>{presets.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
           <label className="field full"><span>Facility name</span><input required value={form.facilityName} onChange={(event) => setForm({ ...form, facilityName: event.target.value })} placeholder="Ashburn AI Campus" /></label>
-          <div className="field full coordinate-field"><span>Paste coordinate pair</span><div className="coordinate-entry"><input aria-label="Latitude and longitude pair" value={coordinatePair} onChange={(event) => { setCoordinatePair(event.target.value); setCoordinateMessage(""); }} placeholder="39.7427, -105.1701" /><button type="button" onClick={applyCoordinatePair}>Apply</button></div><small>{coordinateMessage || "Paste directly from a map, then use the fields below for precise edits."}</small></div>
-          <label className="field"><span>Latitude</span><input required type="number" min="18" max="72" step="0.0001" value={form.latitude} onChange={(event) => { setPreset("custom"); setForm({ ...form, latitude: event.target.value }); }} placeholder="39.0438" /></label>
-          <label className="field"><span>Longitude</span><input required type="number" min="-180" max="-60" step="0.0001" value={form.longitude} onChange={(event) => { setPreset("custom"); setForm({ ...form, longitude: event.target.value }); }} placeholder="-77.4874" /></label>
+          <div className="field full coordinate-field"><span>Paste coordinate pair</span><div className="coordinate-entry"><input aria-label="Latitude and longitude pair" value={coordinatePair} onChange={(event) => { setCoordinatePair(event.target.value); setCoordinateMessage(""); setLocationCheck(null); }} placeholder="39.7427, -105.1701" /><button type="button" onClick={applyCoordinatePair}>Check location</button></div><small>{coordinateMessage || "Paste directly from a map. HeatAhead checks the point against its small demo facility catalog before any FortyGuard request."}</small></div>
+          <label className="field"><span>Latitude</span><input required type="number" min="18" max="72" step="0.0001" value={form.latitude} onChange={(event) => { setPreset("custom"); setLocationCheck(null); setCoordinateMessage(""); setForm({ ...form, latitude: event.target.value }); }} placeholder="39.0438" /></label>
+          <label className="field"><span>Longitude</span><input required type="number" min="-180" max="-60" step="0.0001" value={form.longitude} onChange={(event) => { setPreset("custom"); setLocationCheck(null); setCoordinateMessage(""); setForm({ ...form, longitude: event.target.value }); }} placeholder="-77.4874" /></label>
+          {!locationCheck ? <div className="location-verification full location-unchecked"><div className="coordinate-point" aria-hidden="true"><i /></div><div><strong>Check the facility point first</strong><p>We do not infer “data center” from a valid coordinate. Check the point, review any nearby catalog candidate, then confirm before using FortyGuard credits.</p></div><button type="button" onClick={() => checkLocation(latitude, longitude)}>Check this point</button></div> : <div className={`location-verification full location-${locationCheck.status}`}><div className="coordinate-point" aria-hidden="true"><i /></div><div className="location-verification-copy"><span>{locationCheck.latitude.toFixed(4)}, {locationCheck.longitude.toFixed(4)}</span>{locationCheck.status === "candidate" ? <><strong>Possible catalog match: {locationCheck.candidate?.name}</strong><p>The point is {locationCheck.distanceKm?.toFixed(1)} km from this catalog coordinate. Proximity within {CATALOG_MATCH_RADIUS_KM} km is a candidate—not proof of facility identity.</p></> : locationCheck.status === "confirmed-catalog" ? <><strong>Catalog location confirmed</strong><p>{locationCheck.candidate?.name} is selected. The entered point remains the exact center sent to FortyGuard.</p></> : locationCheck.status === "confirmed-custom" ? <><strong>Customer-reported data center confirmed</strong><p>This point can proceed as a custom facility. The confirmation labels this run only; it does not update a public data-center registry.</p></> : <><strong>No match in the current demo catalog</strong><p>This does not mean the point is not a data center. HeatAhead&apos;s catalog is intentionally small; confirm it as customer-reported or edit the coordinates.</p></>}</div><div className="location-actions">{locationCheck.status === "candidate" && <><button type="button" className="confirm-location" onClick={confirmCatalogLocation}>Confirm {locationCheck.candidate?.name}</button><button type="button" onClick={() => setLocationCheck({ ...locationCheck, status: "unlisted", candidate: null, distanceKm: null })}>Not this facility</button></>}{locationCheck.status === "unlisted" && <><button type="button" className="confirm-location" onClick={useCustomerReportedLocation}>Use as customer-reported DC</button><button type="button" onClick={editLocation}>Edit coordinates</button></>}{(locationCheck.status === "confirmed-catalog" || locationCheck.status === "confirmed-custom") && <button type="button" onClick={editLocation}>Change point</button>}</div></div>}
           <label className="field"><span>IANA timezone</span><select value={form.ianaTimezone} onChange={(event) => setForm({ ...form, ianaTimezone: event.target.value, analysisTimeLocal: localHour(event.target.value) })}>{timezones.map((timezone) => <option key={timezone}>{timezone}</option>)}</select></label>
           <label className="field"><span>Analysis time · local</span><input required type="datetime-local" step="3600" value={form.analysisTimeLocal} onChange={(event) => setForm({ ...form, analysisTimeLocal: event.target.value })} /></label>
           <div className="time-alignment full"><div><strong>Timezone-safe</strong><span>FortyGuard receives the selected local wall-clock hour. HeatAhead independently resolves its UTC instant, rejects ambiguous DST hours, and verifies the returned API offset.</span></div><div className="time-shortcuts" aria-label="Forecast time shortcuts"><button type="button" onClick={() => setForm({ ...form, analysisTimeLocal: localHour(form.ianaTimezone) })}>Now</button><button type="button" onClick={() => setForm({ ...form, analysisTimeLocal: localHour(form.ianaTimezone, 6) })}>+6 h</button><button type="button" onClick={() => setForm({ ...form, analysisTimeLocal: localHour(form.ianaTimezone, 12) })}>+12 h</button></div></div>
@@ -323,9 +359,9 @@ export default function Home() {
             <div className="consent-row"><input id="shared-improvement" type="checkbox" checked={form.allowSharedModelImprovement} onChange={(event) => setForm({ ...form, allowSharedModelImprovement: event.target.checked })} /><label htmlFor="shared-improvement"><strong>Allow de-identified shared model improvement</strong><small>Separate consent; off by default and not used in this Demo.</small></label></div>
           </div>
           {error && <p className="form-error full" role="alert">{error}</p>}
-          <button className="run-button full" disabled={!canSubmit}>{loading ? <><span className="spinner" /> Analysis running · {elapsedSeconds}s</> : canSubmit ? "Analyze facility" : "Enter a valid U.S. location"}</button>
+          <button className="run-button full" disabled={!canSubmit}>{loading ? <><span className="spinner" /> Analysis running · {elapsedSeconds}s</> : canSubmit ? "Analyze confirmed facility" : locationConfirmed ? "Enter a valid U.S. location" : "Check and confirm the facility point"}</button>
           <p className="form-footnote full">One run requests three nested centered square AOIs: selected core width at 60 m granularity; 1.2 km neighborhood at 80 m; and 2.4 km context at 100 m. They are HeatAhead analysis windows—not inferred campus boundaries or non-overlapping rings. Typical processing time is 30–90 seconds.</p>
-          <details className="explain-panel full"><summary>What every input changes</summary><div className="explain-grid"><article><strong>Facility name</strong><p>Record label only. It never enters the API or model.</p></article><article><strong>Latitude / longitude</strong><p>Required API location and the center of all three nested square AOIs. A valid U.S. bounding-box value is not a guarantee of usable tiles; completion is the coverage test.</p></article><article><strong>Timezone + local time</strong><p>Submitted as the location&apos;s wall-clock hour, independently resolved to UTC, checked against API time and offset, and rejected when DST makes the hour ambiguous.</p></article><article><strong>Core square width</strong><p>Controls core exposure statistics. Cooling uses the corrected center tile—not the AOI mean—so changing footprint width does not intentionally average new spatial values into the model.</p></article><article><strong>Cooling configuration</strong><p>Applicability metadata only. Unknown lowers confidence; the current model does not learn configuration-specific coefficients.</p></article><article><strong>Current IT load (MW)</strong><p>Scaling input: cooling ratio × MW. It creates scenario MW but is not fed into the trained ESIF model.</p></article><article><strong>ESIF-equivalent load state</strong><p>ESIF IT divided by the train-only P95 (≈3.66 MW). It is not the customer facility&apos;s design utilization; support hours show comparable ESIF evidence.</p></article><article><strong>Baseline PUE</strong><p>Optional same-facility scenario anchor. Output is baseline + modeled weather uplift; it is not a trained absolute-PUE prediction.</p></article><article><strong>Save / improvement consent</strong><p>Save controls this anonymous browser timeline for up to 90 days. Shared improvement is separate, off by default, and unused in this Demo.</p></article></div></details>
+          <details className="explain-panel full"><summary>What every input changes</summary><div className="explain-grid"><article><strong>Facility identity check</strong><p>Client-side catalog proximity and customer confirmation only. It prevents accidental runs but never claims that an unlisted point is not a data center.</p></article><article><strong>Facility name</strong><p>Record label only. It never enters the API or model.</p></article><article><strong>Latitude / longitude</strong><p>Required API location and the center of all three nested square AOIs. A valid U.S. bounding-box value is not a guarantee of usable tiles; completion is the coverage test.</p></article><article><strong>Timezone + local time</strong><p>Submitted as the location&apos;s wall-clock hour, independently resolved to UTC, checked against API time and offset, and rejected when DST makes the hour ambiguous.</p></article><article><strong>Core square width</strong><p>Controls core exposure statistics. Cooling uses the corrected center tile—not the AOI mean—so changing footprint width does not intentionally average new spatial values into the model.</p></article><article><strong>Cooling configuration</strong><p>Applicability metadata only. Unknown lowers confidence; the current model does not learn configuration-specific coefficients.</p></article><article><strong>Current IT load (MW)</strong><p>Scaling input: cooling ratio × MW. It creates scenario MW but is not fed into the trained ESIF model.</p></article><article><strong>ESIF-equivalent load state</strong><p>ESIF IT divided by the train-only P95 (≈3.66 MW). It is not the customer facility&apos;s design utilization; support hours show comparable ESIF evidence.</p></article><article><strong>Baseline PUE</strong><p>Optional same-facility scenario anchor. Output is baseline + modeled weather uplift; it is not a trained absolute-PUE prediction.</p></article><article><strong>Save / improvement consent</strong><p>Save controls this anonymous browser timeline for up to 90 days. Shared improvement is separate, off by default, and unused in this Demo.</p></article></div></details>
         </form>
 
         <section className={`result-panel ${analysis || loading ? "has-result" : "empty-result"}`} id="analysis-result" aria-live="polite">
@@ -334,7 +370,7 @@ export default function Home() {
       </section>
 
       <section className="evidence-section" id="evidence">
-        <div className="section-heading"><div><p className="eyebrow">Verified pipeline</p><h2>Every output has a declared evidence level.</h2></div><span className="verification-date">Reproduced · Aug 29, 2026</span></div>
+        <div className="section-heading"><div><p className="eyebrow">Verified pipeline</p><h2>Every output has a declared evidence level.</h2></div><span className="verification-date">Production-checked · Aug 31, 2026</span></div>
         <div className="evidence-grid">
           <article><div><span>Step 1</span><b className="status-pass">PASS</b></div><h3>ESIF internal model</h3><strong>R² 0.448 · MAE 0.003246</strong><p>Chronological test set. Moderate explanatory power, but 60.5% lower MAE than the train-median baseline. Suitable for a bounded Demo scenario—not control-grade truth.</p></article>
           <article><div><span>Step 2</span><b className="status-partial">PARTIAL</b></div><h3>Frontier operational check</h3><strong>Baseline R² 0.828 · not transfer R²</strong><p>Operational baseline decomposition passed. The cross-facility weather coefficient was rejected and is not used in customer claims.</p></article>
@@ -364,7 +400,7 @@ export default function Home() {
         <ol><li><span>01</span><div><strong>HeatAhead Exposure</strong><p>A transparent heuristic computed from FortyGuard core, neighborhood, and context statistics.</p></div></li><li><span>02</span><div><strong>Weather-driven cooling increment</strong><p>Locked ESIF model using corrected center-tile weather; AOI means are excluded from the model input.</p></div></li><li><span>03</span><div><strong>Transfer Confidence</strong><p>Checks UTC alignment, load support, tile counts, cooling metadata, and ESIF extreme-weather support; never above Medium.</p></div></li></ol>
       </section>
 
-      <footer><p><strong>Important:</strong> Cooling outputs are ESIF-equivalent scenarios, not measured customer-facility PUE or cooling telemetry.</p><span>Demo v2.3 · support-gated model · protected public API · 90-day browser history</span></footer>
+      <footer><p><strong>Important:</strong> Cooling outputs are ESIF-equivalent scenarios, not measured customer-facility PUE or cooling telemetry.</p><span>Demo v2.4 · customer-confirmed location · support-gated model · protected public API</span></footer>
     </main>
   );
 }

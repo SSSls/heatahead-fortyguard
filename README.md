@@ -89,6 +89,7 @@ npm test
 - [Model card and equations](docs/MODEL_CARD.md)
 - [Public production QA record](docs/SUBMISSION_QA_ZH.md)
 - [v2.3 accuracy, input, and model-method roadmap](docs/V2_3_ACCURACY_ROADMAP_ZH.md)
+- [2–3 minute live Demo pitch and recording script](docs/DEMO_PITCH_2_3_MIN_ZH.md)
 - [Three-minute demo script](docs/DEMO_SCRIPT_ZH.md)
 - [Submission checklist](docs/SUBMISSION_CHECKLIST_ZH.md)
 

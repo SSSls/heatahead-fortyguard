@@ -18,6 +18,8 @@ Customer input
 
 ## Inputs
 
+Before the first API request, the browser requires a facility-point confirmation. Known presets are pre-confirmed. A custom coordinate is compared with the small, explicit HeatAhead demo catalog using great-circle distance: a facility within 10 km is shown only as a candidate, never as confirmed identity. When there is no candidate, the UI states that catalog absence is not evidence that the site is not a data center and lets the customer confirm a customer-reported facility or edit the point. This is a client-side spend and identity gate; it does not alter FortyGuard data or the ESIF model.
+
 | Input | Role | Effect on output |
 | --- | --- | --- |
 | Facility name | Record label | No model effect |
