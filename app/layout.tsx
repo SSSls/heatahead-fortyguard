@@ -7,7 +7,7 @@ const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"]
 
 export const metadata: Metadata = {
   title: "HeatAhead — Data Center Weather Intelligence",
-  description: "ESIF-trained cooling scenarios, Frontier external checks, and FortyGuard environmental inputs for U.S. hyperscale data centers.",
+  description: "FortyGuard-derived exposure and support-gated ESIF cooling scenarios for evaluating U.S. data-center locations.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

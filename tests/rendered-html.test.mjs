@@ -22,7 +22,7 @@ async function render() {
   );
 }
 
-test("server-renders the HeatAhead v2 customer workflow", async () => {
+test("server-renders the HeatAhead v2.3 customer workflow", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -33,17 +33,19 @@ test("server-renders the HeatAhead v2 customer workflow", async () => {
   assert.match(html, /Facility name/);
   assert.match(html, /Core square width/);
   assert.match(html, /Paste coordinate pair/);
-  assert.match(html, /Load state · 45–105% in 5% steps/);
+  assert.match(html, /ESIF-equivalent load state · 45–105%/);
   assert.match(html, /Exact load state/);
   assert.match(html, /Best-supported choices/);
   assert.match(html, /Observed · 171 h/);
-  assert.match(html, /Environmental Exposure/);
-  assert.match(html, /Predicted Cooling Impact/);
+  assert.match(html, /HeatAhead Exposure/);
+  assert.match(html, /Weather-driven cooling increment/);
   assert.match(html, /Facility analysis history/);
   assert.match(html, /What every input changes/);
-  assert.match(html, /Delete permanently removes/);
+  assert.match(html, /retained for up to 90 days/);
+  assert.match(html, /corrected center tile/);
+  assert.match(html, /Enter a valid U\.S\. location/);
   assert.match(html, /ESIF internal model/);
-  assert.match(html, /Frontier calibration/);
+  assert.match(html, /Frontier operational check/);
   assert.match(html, /Seven U.S. target sites/);
   assert.match(html, /Thermal events compress the operator/);
   assert.match(html, /Responsible framing/);

@@ -79,7 +79,9 @@ Baseline PUE should preferably come from the same facility, comparable load band
 
 ## Confidence interpretation
 
-`Transfer Confidence` is a rule-based applicability label, not a confidence interval. It is Low when the API timestamp is not aligned, cooling configuration is unknown, or the selected load state has sparse ESIF support. It is otherwise Medium and is intentionally never High until API-to-ESIF and cross-facility weather transfer have been externally validated.
+`Transfer Confidence` is a rule-based applicability label, not a confidence interval. It is Low when UTC / API-offset alignment fails, cooling configuration is unknown, ESIF load support is sparse, AOI tile counts are insufficient, dry-bulb exceeds the ESIF train P95 of 28.2°C, or wet bulb exceeds the ESIF train P95 of 17.1°C. It is otherwise Medium and is intentionally never High until API-to-ESIF and cross-facility weather transfer have been externally validated.
+
+The deployment dry-bulb input is the corrected FortyGuard tile nearest the requested coordinate. Core AOI mean, p90, spread, neighborhood mean, context mean, and hotspot fraction remain exposure-layer values and are not model features.
 
 ## Claim boundary
 

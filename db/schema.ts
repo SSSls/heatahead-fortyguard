@@ -51,5 +51,16 @@ export const analyses = sqliteTable(
   (table) => [
     index("idx_analyses_customer_created").on(table.customerId, table.createdAtUtc),
     index("idx_analyses_customer_facility").on(table.customerId, table.facilityName),
+    index("idx_analyses_created").on(table.createdAtUtc),
   ],
+);
+
+export const apiRateLimits = sqliteTable(
+  "api_rate_limits",
+  {
+    key: text("key").primaryKey(),
+    requestCount: integer("request_count").notNull().default(0),
+    updatedAtUtc: text("updated_at_utc").notNull(),
+  },
+  (table) => [index("idx_api_rate_limits_updated").on(table.updatedAtUtc)],
 );

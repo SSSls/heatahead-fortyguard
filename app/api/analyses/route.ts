@@ -1,10 +1,10 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { getChatGPTUser } from "../../chatgpt-auth";
 import { getDb } from "../../../db";
-import { analyses } from "../../../db/schema";
+import { analyses, apiRateLimits } from "../../../db/schema";
 import { MODEL_ID, predictCoolingRatio, stullWetBulbC } from "../../../lib/esif-model";
 import {
   pollEnvironmentalPoint,
@@ -16,6 +16,11 @@ import {
   type SpatialActivityIds,
 } from "../../../lib/fortyguard";
 import { loadStateOption } from "../../../lib/load-state";
+import {
+  assessTransferConfidence,
+  timezoneOffsetMinutes,
+  zonedLocalToUtcStrict,
+} from "../../../lib/analysis-quality";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +52,7 @@ type AnalysisRow = typeof analyses.$inferSelect;
 type SpatialResult = { core: HeatmapStats; near: HeatmapStats; background: HeatmapStats };
 
 export async function GET(request: Request) {
+  await cleanupExpiredAnalyses();
   const customerId = await customerScope(request);
   const rows = await getDb()
     .select()
@@ -81,6 +87,7 @@ export async function DELETE(request: Request) {
 }
 
 export async function POST(request: Request) {
+  await cleanupExpiredAnalyses();
   const customerId = await customerScope(request);
   const createdAtUtc = new Date().toISOString();
   const id = crypto.randomUUID();
@@ -91,7 +98,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: safeMessage(error) }, { status: 400 });
   }
 
-  const expectedUtc = zonedLocalToUtc(input.analysisTimeLocal, input.ianaTimezone);
+  let expectedUtc: Date;
+  try {
+    expectedUtc = zonedLocalToUtcStrict(input.analysisTimeLocal, input.ianaTimezone);
+  } catch (error) {
+    return NextResponse.json({ error: safeMessage(error) }, { status: 400 });
+  }
   const earliest = Date.parse("2019-01-01T00:00:00Z");
   const latest = Date.now() + 12 * 60 * 60 * 1000;
   if (expectedUtc.getTime() < earliest || expectedUtc.getTime() > latest) {
@@ -107,6 +119,9 @@ export async function POST(request: Request) {
   }
   const [startDate, startTimeWithMinutes] = input.analysisTimeLocal.split("T");
   const startTime = startTimeWithMinutes.slice(0, 5);
+
+  const rateLimitResponse = await enforceSubmissionLimits(request, customerId);
+  if (rateLimitResponse) return rateLimitResponse;
 
   try {
     const activityIds = await submitSpatialLayers({
@@ -202,6 +217,14 @@ export async function PATCH(request: Request) {
   }
 
   try {
+    if (row.status === "submitting_environment") {
+      const transitionStartedAtUtc = stringValue(parseJsonObject(row.dataQualityJson).transitionStartedAtUtc);
+      const ageMs = transitionStartedAtUtc ? Date.now() - Date.parse(transitionStartedAtUtc) : 0;
+      if (ageMs > 10 * 60 * 1000) {
+        return failedResponse(row, customerId, "The environmental transition timed out. Start a new analysis.", "environment-transition");
+      }
+      return pendingResponse(row);
+    }
     if (row.status === "processing_spatial") {
       const activityIds = parseSpatialActivityIds(row.heatmapActivityIdsJson);
       const poll = await pollSpatialLayers(activityIds, {
@@ -230,6 +253,28 @@ export async function PATCH(request: Request) {
 }
 
 async function advanceToEnvironment(row: AnalysisRow, customerId: string, spatial: SpatialResult) {
+  const claimSummary = "Spatial layers are complete; HeatAhead is starting the environmental analysis.";
+  const transitionStartedAtUtc = new Date().toISOString();
+  const claimQuality = JSON.stringify({
+    ...parseJsonObject(row.dataQualityJson),
+    stage: "submitting_environment",
+    transitionStartedAtUtc,
+  });
+  const claimed = await getDb()
+    .update(analyses)
+    .set({ status: "submitting_environment", summary: claimSummary, dataQualityJson: claimQuality })
+    .where(and(
+      eq(analyses.id, row.id),
+      eq(analyses.customerId, customerId),
+      eq(analyses.status, "processing_spatial"),
+    ))
+    .returning({ id: analyses.id });
+  if (!claimed.length) {
+    return NextResponse.json(
+      { analysis: toPublicRecord({ ...row, status: "submitting_environment", summary: claimSummary }), persisted: row.saveForHistory },
+      { status: 202 },
+    );
+  }
   const [startDate, startTimeWithMinutes] = row.analysisTimeLocal.split("T");
   const startTime = startTimeWithMinutes.slice(0, 5);
   const coreMinusBackgroundC = spatial.core.meanC - spatial.background.meanC;
@@ -239,7 +284,7 @@ async function advanceToEnvironment(row: AnalysisRow, customerId: string, spatia
   const environmentActivityId = await submitEnvironmentalPoint({
     latitude: row.latitude,
     longitude: row.longitude,
-    temperatureC: spatial.core.meanC,
+    temperatureC: spatial.core.centerC,
     startDate,
     startTime,
   });
@@ -286,7 +331,7 @@ async function completedResponse(row: AnalysisRow, customerId: string, environme
       86400000,
   );
   const modelInput = {
-    tempC: spatial.coreMeanTemperatureC,
+    tempC: spatial.centerTemperatureC,
     rhPercent: environmental.relativeHumidityPercent,
     wetBulbC: environmental.wetBulbTemperatureC,
     localHour,
@@ -319,23 +364,30 @@ async function completedResponse(row: AnalysisRow, customerId: string, environme
   // FortyGuard can report a fixed GMT offset during daylight saving time. Keep
   // both checks visible so a matching requested local hour is not falsely rejected.
   const localWallClockAligned = environmental.apiTimestamp?.slice(0, 16) === row.analysisTimeLocal;
-  const timestampAligned =
-    localWallClockAligned || (timestampDeltaMinutes !== null && timestampDeltaMinutes <= 30);
+  const requestedOffsetMinutes = timezoneOffsetMinutes(new Date(row.analysisTimeUtc), row.ianaTimezone);
+  const apiOffsetMinutes = environmental.apiTimezoneOffsetHours === null
+    ? null
+    : Math.round(environmental.apiTimezoneOffsetHours * 60);
+  const apiOffsetAligned = apiOffsetMinutes === null || Math.abs(apiOffsetMinutes - requestedOffsetMinutes) <= 1;
+  const timestampAligned = timestampDeltaMinutes !== null && timestampDeltaMinutes <= 30 && apiOffsetAligned;
   const timestampAlignmentBasis =
-    timestampDeltaMinutes !== null && timestampDeltaMinutes <= 30
+    timestampAligned
       ? "utc-instant"
-      : localWallClockAligned
-        ? "local-wall-clock"
-        : "mismatch";
+      : "mismatch";
   const loadSupport = loadStateOption(row.itLoadFraction);
   if (!loadSupport) throw new Error("Stored load state is outside the supported 5% grid.");
-  const confidence =
-    !timestampAligned ||
-    row.coolingConfiguration === "unknown" ||
-    loadSupport.support === "sparse" ||
-    loadSupport.support === "extrapolation"
-      ? "Low"
-      : "Medium";
+  const priorQuality = parseJsonObject(row.dataQualityJson);
+  const transfer = assessTransferConfidence({
+    timestampAligned,
+    coolingConfiguration: row.coolingConfiguration,
+    loadSupport: loadSupport.support,
+    dryBulbC: spatial.centerTemperatureC,
+    wetBulbC: environmental.wetBulbTemperatureC,
+    coreTileCount: nullableFiniteNumber(priorQuality.coreTileCount),
+    nearTileCount: nullableFiniteNumber(priorQuality.nearTileCount),
+    backgroundTileCount: nullableFiniteNumber(priorQuality.backgroundTileCount),
+  });
+  const confidence = transfer.confidence;
   const summary = buildSummary({
     exposureLevel,
     wetBulbC: environmental.wetBulbTemperatureC,
@@ -347,7 +399,6 @@ async function completedResponse(row: AnalysisRow, customerId: string, environme
     loadStatePercent: loadSupport.percent,
     loadStateSupport: loadSupport.support,
   });
-  const priorQuality = parseJsonObject(row.dataQualityJson);
   const dataQuality = {
     ...priorQuality,
     stage: "completed",
@@ -359,8 +410,14 @@ async function completedResponse(row: AnalysisRow, customerId: string, environme
     timestampAligned,
     localWallClockAligned,
     timestampAlignmentBasis,
-    spatialFeaturesUsedByCoolingModel: false,
+    requestedTimezoneOffsetMinutes: requestedOffsetMinutes,
+    apiTimezoneOffsetMinutes: apiOffsetMinutes,
+    apiTimezoneOffsetAligned: apiOffsetAligned,
+    coolingModelTemperatureSource: "fortyguard-core-center-tile",
+    coreAoiMeanUsedByCoolingModel: false,
     frontierWeatherTransferApplied: false,
+    weatherOutsideValidatedRange: transfer.weatherOutsideValidatedRange,
+    confidenceReasons: transfer.reasons,
     loadStatePercent: loadSupport.percent,
     loadStateSupport: loadSupport.support,
     loadStateTrainingHours: loadSupport.trainingHours,
@@ -421,6 +478,88 @@ function pendingResponse(row: AnalysisRow) {
   return NextResponse.json(
     { analysis: toPublicRecord(row), persisted: row.saveForHistory },
     { status: 202 },
+  );
+}
+
+async function cleanupExpiredAnalyses() {
+  const now = Date.now();
+  const transientCutoff = new Date(now - 6 * 60 * 60 * 1000).toISOString();
+  const savedCutoff = new Date(now - 90 * 24 * 60 * 60 * 1000).toISOString();
+  const rateLimitCutoff = new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString();
+  const db = getDb();
+  await db.delete(analyses).where(or(
+    and(eq(analyses.saveForHistory, false), lt(analyses.createdAtUtc, transientCutoff)),
+    and(eq(analyses.saveForHistory, true), lt(analyses.createdAtUtc, savedCutoff)),
+  ));
+  await db.delete(apiRateLimits).where(lt(apiRateLimits.updatedAtUtc, rateLimitCutoff));
+}
+
+async function enforceSubmissionLimits(request: Request, customerId: string) {
+  const db = getDb();
+  const [active] = await db
+    .select({ total: count() })
+    .from(analyses)
+    .where(and(
+      eq(analyses.customerId, customerId),
+      inArray(analyses.status, ["processing_spatial", "processing_environment", "submitting_environment"]),
+    ));
+  if ((active?.total ?? 0) >= 2) {
+    return rateLimited("Two analyses are already processing in this browser. Resume or wait for them to finish.", 60);
+  }
+
+  const now = new Date();
+  const identity = await requestIdentityHash(request, customerId);
+  const minuteBucket = now.toISOString().slice(0, 16);
+  const hourBucket = now.toISOString().slice(0, 13);
+  const dayBucket = now.toISOString().slice(0, 10);
+  const checks = [
+    { key: `minute:${minuteBucket}:${identity}`, limit: 2, retrySeconds: 60 },
+    { key: `scope-hour:${hourBucket}:${await stableHash(customerId)}`, limit: 10, retrySeconds: 3600 },
+    { key: `identity-day:${dayBucket}:${identity}`, limit: 30, retrySeconds: 86400 },
+    { key: `global-day:${dayBucket}`, limit: 500, retrySeconds: 86400 },
+  ];
+
+  for (const check of checks) {
+    if (!(await incrementRateLimit(check.key, check.limit, now.toISOString()))) {
+      return rateLimited("The public Demo request limit has been reached. Please try again later.", check.retrySeconds);
+    }
+  }
+  return null;
+}
+
+async function incrementRateLimit(key: string, limit: number, updatedAtUtc: string) {
+  const [row] = await getDb()
+    .insert(apiRateLimits)
+    .values({ key, requestCount: 1, updatedAtUtc })
+    .onConflictDoUpdate({
+      target: apiRateLimits.key,
+      set: {
+        requestCount: sql`${apiRateLimits.requestCount} + 1`,
+        updatedAtUtc,
+      },
+    })
+    .returning({ requestCount: apiRateLimits.requestCount });
+  return (row?.requestCount ?? limit + 1) <= limit;
+}
+
+async function requestIdentityHash(request: Request, customerId: string) {
+  const address = request.headers.get("cf-connecting-ip")
+    ?? request.headers.get("x-real-ip")
+    ?? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+    ?? "unknown";
+  return stableHash(`${address}:${customerId}`);
+}
+
+async function stableHash(value: string) {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest).slice(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function rateLimited(message: string, retrySeconds: number) {
+  return NextResponse.json(
+    { error: message },
+    { status: 429, headers: { "retry-after": String(retrySeconds) } },
   );
 }
 
@@ -497,6 +636,7 @@ function parseSpatialActivityIds(value: string | null): SpatialActivityIds {
 
 function requiredSpatialValues(row: AnalysisRow) {
   const values = {
+    centerTemperatureC: row.centerTemperatureC,
     coreMeanTemperatureC: row.coreMeanTemperatureC,
     coreP90TemperatureC: row.coreP90TemperatureC,
     coreMinusBackgroundC: row.coreMinusBackgroundC,
@@ -515,37 +655,6 @@ function parseJsonObject(value: string | null) {
   } catch {
     return {};
   }
-}
-
-function zonedLocalToUtc(local: string, timezone: string) {
-  const [datePart, timePart] = local.split("T");
-  const [year, month, day] = datePart.split("-").map(Number);
-  const [hour, minute] = timePart.split(":").map(Number);
-  const desired = Date.UTC(year, month - 1, day, hour, minute);
-  let guess = desired;
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const parts = Object.fromEntries(
-      formatter.formatToParts(new Date(guess)).map((part) => [part.type, part.value]),
-    );
-    const represented = Date.UTC(
-      Number(parts.year),
-      Number(parts.month) - 1,
-      Number(parts.day),
-      Number(parts.hour),
-      Number(parts.minute),
-    );
-    guess += desired - represented;
-  }
-  return new Date(guess);
 }
 
 function environmentalExposureScore(input: {
@@ -587,9 +696,20 @@ function buildSummary(input: {
 
 function toPublicRecord<T extends Record<string, unknown>>(record: T) {
   const safe: Record<string, unknown> = { ...record };
+  const quality = parseJsonObject(typeof safe.dataQualityJson === "string" ? safe.dataQualityJson : null);
+  safe.confidenceReasons = Array.isArray(quality.confidenceReasons)
+    ? quality.confidenceReasons.filter((item): item is string => typeof item === "string").slice(0, 8)
+    : [];
+  safe.weatherOutsideValidatedRange = quality.weatherOutsideValidatedRange === true;
+  safe.timestampAlignmentBasis = stringValue(quality.timestampAlignmentBasis) || null;
+  safe.apiTimezone = stringValue(quality.apiTimezone) || null;
+  safe.coreTileCount = nullableFiniteNumber(quality.coreTileCount);
+  safe.nearTileCount = nullableFiniteNumber(quality.nearTileCount);
+  safe.backgroundTileCount = nullableFiniteNumber(quality.backgroundTileCount);
   delete safe.customerId;
   delete safe.heatmapActivityIdsJson;
   delete safe.environmentActivityId;
+  delete safe.dataQualityJson;
   return safe;
 }
 
@@ -614,6 +734,11 @@ function finiteNumber(value: unknown) {
 function optionalNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
   return finiteNumber(value);
+}
+
+function nullableFiniteNumber(value: unknown) {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function clip(value: number) {

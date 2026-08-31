@@ -18,6 +18,7 @@ export type EnvironmentalPoint = {
   activityId: string;
   apiTimestamp: string | null;
   apiTimezone: string | null;
+  apiTimezoneOffsetHours: number | null;
   relativeHumidityPercent: number;
   wetBulbTemperatureC: number;
   apparentTemperatureC: number | null;
@@ -220,6 +221,7 @@ function parseEnvironmental(activity: unknown, activityId: string): Environmenta
     activityId,
     apiTimestamp: firstString(metadata.timestamps),
     apiTimezone: typeof metadata.timezone === "string" ? metadata.timezone : null,
+    apiTimezoneOffsetHours: firstFinite([metadata.timezone_offset_hours]),
     relativeHumidityPercent: rh,
     wetBulbTemperatureC: wetBulb,
     apparentTemperatureC: firstNumber(parameters.apparent_temperature_celsius),
@@ -277,9 +279,15 @@ function featureDistance(feature: Record<string, unknown>, latitude: number, lon
   const points: number[][] = [];
   collectPoints(coordinates, points);
   if (!points.length) return Number.POSITIVE_INFINITY;
-  const lon = points.reduce((sum, point) => sum + point[0], 0) / points.length;
-  const lat = points.reduce((sum, point) => sum + point[1], 0) / points.length;
-  return Math.pow(lat - latitude, 2) + Math.pow(lon - longitude, 2);
+  const west = Math.min(...points.map((point) => point[0]));
+  const east = Math.max(...points.map((point) => point[0]));
+  const south = Math.min(...points.map((point) => point[1]));
+  const north = Math.max(...points.map((point) => point[1]));
+  const lon = (west + east) / 2;
+  const lat = (south + north) / 2;
+  const northingM = (lat - latitude) * 110574;
+  const eastingM = (lon - longitude) * 111320 * Math.cos((latitude * Math.PI) / 180);
+  return Math.hypot(northingM, eastingM);
 }
 
 function collectPoints(value: unknown, points: number[][]) {

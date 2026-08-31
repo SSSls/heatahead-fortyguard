@@ -9,10 +9,10 @@ HeatAhead is a FortyGuard Hackathon demo for location-aware thermal decision sup
 1. Accepts a facility name, coordinates, local analysis time, IANA timezone, footprint, load state, cooling configuration, and optional IT load / baseline PUE.
 2. Submits three asynchronous FortyGuard spatial analyses: facility core, roughly 1 km neighborhood, and roughly 2–3 km background.
 3. Retrieves point relative humidity and wet-bulb temperature for the same requested time.
-4. Reports `Environmental Exposure` directly from the spatial API result.
-5. Applies the locked ESIF model to point weather and load state to estimate an ESIF-equivalent cooling ratio and weather uplift.
+4. Computes a transparent `HeatAhead Exposure` heuristic from FortyGuard-derived spatial statistics; it is not a failure probability.
+5. Applies the locked ESIF model to the corrected center temperature tile, RH, wet bulb, time, and ESIF-equivalent load state.
 6. Scales the normalized result to MW only when the user supplies IT load. Scenario PUE is shown only when a baseline PUE is supplied.
-7. Stores resumable activity IDs and optional analysis history in Cloudflare D1.
+7. Stores protected resumable activity IDs and optional, browser-scoped 90-day analysis history in Cloudflare D1.
 
 ## Architecture
 
@@ -38,13 +38,14 @@ See [MODEL_CARD.md](docs/MODEL_CARD.md) for equations, validation gates, and cla
 
 ## Important boundaries
 
-- Environmental Exposure is a direct FortyGuard spatial analysis.
+- HeatAhead Exposure is a product heuristic computed from FortyGuard-derived spatial inputs.
 - Predicted Cooling Impact is an **ESIF-equivalent scenario**, not measured customer-facility telemetry.
-- Spatial heatmap statistics are displayed separately and are not inserted into the ESIF-trained model.
+- Core / neighborhood / context averages stay in the Exposure layer. The cooling model uses only the corrected center tile from the core heatmap as its dry-bulb input.
 - IT load scales a normalized cooling ratio to MW; the model was not trained on 100–300 MW hyperscale facilities.
 - Scenario PUE equals user-supplied baseline PUE plus modeled weather uplift. It is not an absolute-PUE model.
 - Frontier provides an external operational-baseline check. Its cross-facility weather coefficient failed the gate and is not used.
-- Transfer confidence is an applicability label, not a statistical prediction interval, and is capped at Medium until cross-facility transfer is externally validated.
+- Transfer confidence checks UTC/offset alignment, ESIF load and extreme-weather support, tile counts, and cooling metadata. It is not a prediction interval and is capped at Medium.
+- The public API applies browser/IP/global limits, a two-analysis concurrency cap, and short-lived cleanup for unsaved orchestration records.
 - This is planning support, not autonomous facility control or a replacement for site telemetry, alarms, redundancy checks, or operating procedures.
 
 ## Data sources
@@ -87,6 +88,7 @@ npm test
 - [Architecture and end-to-end flow](docs/ARCHITECTURE.md)
 - [Model card and equations](docs/MODEL_CARD.md)
 - [Public production QA record](docs/SUBMISSION_QA_ZH.md)
+- [v2.3 accuracy, input, and model-method roadmap](docs/V2_3_ACCURACY_ROADMAP_ZH.md)
 - [Three-minute demo script](docs/DEMO_SCRIPT_ZH.md)
 - [Submission checklist](docs/SUBMISSION_CHECKLIST_ZH.md)
 
