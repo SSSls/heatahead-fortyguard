@@ -14,7 +14,7 @@ HeatAhead 目前是一个有明确证据边界的 Hackathon 决策支持 Demo：
 
 $$
 r_{cool,t}=\frac{P_{cooling,t}}{P_{IT,t}}.
-$
+$$
 
 模型形式为：
 
